@@ -1,0 +1,230 @@
+name: Build LitePlay APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Accept Android SDK Licenses Automatically
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Create Lightweight Music App & Build APK
+        run: |
+          mkdir -p app/src/main/java/com/liteplay/ultralite
+          mkdir -p app/src/main/res/drawable
+
+          cat << 'EOF' > settings.gradle
+          rootProject.name = "LitePlay"
+          include ':app'
+          EOF
+
+          cat << 'EOF' > build.gradle
+          buildscript {
+              repositories { google(); mavenCentral() }
+              dependencies { classpath 'com.android.tools.build:gradle:8.1.0' }
+          }
+          allprojects { repositories { google(); mavenCentral() } }
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m
+          android.useAndroidX=true
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          apply plugin: 'com.android.application'
+          android {
+              namespace "com.liteplay.ultralite"
+              compileSdkVersion 33
+              defaultConfig {
+                  applicationId "com.liteplay.ultralite"
+                  minSdkVersion 24
+                  targetSdkVersion 33
+                  versionCode 1
+                  versionName "1.0"
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/ic_icon.xml
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#000000" android:pathData="M0,0h108v108h-108z"/>
+              <path android:fillColor="#00E5FF" android:pathData="M38,30v48l40,-24z"/>
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <application
+                  android:label="LitePlay Music"
+                  android:icon="@drawable/ic_icon"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true"
+                      android:configChanges="orientation|screenSize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/liteplay/ultralite/MainActivity.java
+          package com.liteplay.ultralite;
+
+          import android.app.Activity;
+          import android.content.ContentUris;
+          import android.database.Cursor;
+          import android.graphics.Color;
+          import android.media.MediaPlayer;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.PowerManager;
+          import android.provider.MediaStore;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.widget.*;
+          import java.util.ArrayList;
+
+          public class MainActivity extends Activity {
+              private MediaPlayer mp = new MediaPlayer();
+              private ArrayList<Uri> songUris = new ArrayList<>();
+              private ArrayList<String> songNames = new ArrayList<>();
+              private int currentIndex = -1;
+              private TextView nowPlaying;
+              private Button playBtn;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(Color.BLACK);
+                  root.setPadding(24, 32, 24, 24);
+
+                  TextView title = new TextView(this);
+                  title.setText("⚡ LitePlay Ultra Lite");
+                  title.setTextColor(Color.parseColor("#00E5FF"));
+                  title.setTextSize(22f);
+                  root.addView(title);
+
+                  nowPlaying = new TextView(this);
+                  nowPlaying.setText("गाने पर टैप करके बजाएं (Screen-Off Audio Active)");
+                  nowPlaying.setTextColor(Color.WHITE);
+                  nowPlaying.setPadding(0, 16, 0, 16);
+                  root.addView(nowPlaying);
+
+                  LinearLayout controls = new LinearLayout(this);
+                  controls.setGravity(Gravity.CENTER);
+                  Button prevBtn = new Button(this); prevBtn.setText("⏮ Prev");
+                  playBtn = new Button(this); playBtn.setText("▶️ Play");
+                  Button nextBtn = new Button(this); nextBtn.setText("⏭ Next");
+                  controls.addView(prevBtn);
+                  controls.addView(playBtn);
+                  controls.addView(nextBtn);
+                  root.addView(controls);
+
+                  ListView listView = new ListView(this);
+                  root.addView(listView);
+                  setContentView(root);
+
+                  mp.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
+                  mp.setOnCompletionListener(m -> playNext());
+
+                  prevBtn.setOnClickListener(v -> playPrev());
+                  nextBtn.setOnClickListener(v -> playNext());
+                  playBtn.setOnClickListener(v -> {
+                      if (mp.isPlaying()) { mp.pause(); playBtn.setText("▶️ Play"); }
+                      else if (currentIndex != -1) { mp.start(); playBtn.setText("⏸ Pause"); }
+                  });
+
+                  if (Build.VERSION.SDK_INT >= 23) {
+                      requestPermissions(new String[]{
+                          "android.permission.READ_EXTERNAL_STORAGE",
+                          "android.permission.READ_MEDIA_AUDIO"
+                      }, 1);
+                  }
+                  loadSongs(listView);
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int req, String[] perms, int[] res) {
+                  ListView lv = (ListView) ((LinearLayout) getWindow().getDecorView().findViewById(android.R.id.content).getRootView()).getTouchables().get(0);
+                  recreate();
+              }
+
+              private void loadSongs(ListView listView) {
+                  try {
+                      Cursor c = getContentResolver().query(
+                          MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                          new String[]{MediaStore.Audio.Media._ID, MediaStore.Audio.Media.TITLE},
+                          null, null, MediaStore.Audio.Media.TITLE + " ASC");
+                      if (c != null) {
+                          while (c.moveToNext()) {
+                              long id = c.getLong(0);
+                              String name = c.getString(1);
+                              songUris.add(ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id));
+                              songNames.add("🎵 " + name);
+                          }
+                          c.close();
+                      }
+                  } catch (Exception ignored) {}
+
+                  ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, songNames);
+                  listView.setAdapter(adapter);
+                  listView.setOnItemClickListener((p, v, pos, id) -> playSong(pos));
+              }
+
+              private void playSong(int pos) {
+                  if (pos < 0 || pos >= songUris.size()) return;
+                  currentIndex = pos;
+                  try {
+                      mp.reset();
+                      mp.setDataSource(getApplicationContext(), songUris.get(pos));
+                      mp.prepare();
+                      mp.start();
+                      nowPlaying.setText("Playing: " + songNames.get(pos));
+                      playBtn.setText("⏸ Pause");
+                  } catch (Exception e) {
+                      Toast.makeText(this, "Error playing track", Toast.LENGTH_SHORT).show();
+                  }
+              }
+
+              private void playNext() {
+                  if (!songUris.isEmpty()) playSong((currentIndex + 1) % songUris.size());
+              }
+
+              private void playPrev() {
+                  if (!songUris.isEmpty()) playSong((currentIndex - 1 + songUris.size()) % songUris.size());
+              }
+          }
+          EOF
+
+          gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LitePlay-Ultra-Lite-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
